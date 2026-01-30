@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="i8080.vcxproj" Id="0eeddcc7-a120-474e-8508-13c7f21d762a" />
+</Solution>
