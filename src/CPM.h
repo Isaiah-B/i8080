@@ -19,8 +19,19 @@ public:
 	{
 		switch (code)
 		{
-			case 9: C_WRITESTR(addr);
+			case 0x0: WBOOT(); break;
+			case 0x9: C_WRITESTR(addr); break;
+
+			default:
+				fprintf(stderr, "INVALID CPM FUNCTION CALL\nExiting...\n");
+				exit(1);
 		}
+	}
+
+	void WBOOT()
+	{
+		printf("CPM WBOOT\n");
+		exit(0);
 	}
 
 	void C_WRITESTR(uint16_t addr)
@@ -31,6 +42,7 @@ public:
 			printf("%c", c);
 			c = memory->Read(addr++);
 		}
+		printf("\n");
 	}
 
 private:

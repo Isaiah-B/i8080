@@ -14,7 +14,7 @@ int main()
 
 	i8080* cpu = new i8080(memory, cpm);
 
-	for (int i{ 0 }; i < 450; i++) {
+	while (1) {
 		cpu->Cycle();
 	}
 

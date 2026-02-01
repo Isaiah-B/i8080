@@ -12,7 +12,7 @@ public:
 	void LoadROM(const char* filename)
 	{
 		std::ifstream file(filename, std::ifstream::binary | std::ifstream::ate);
-		int filesize = file.tellg();
+		auto filesize = file.tellg();
 		file.seekg(std::ifstream::beg);
 
 		std::vector<char> buf(filesize);

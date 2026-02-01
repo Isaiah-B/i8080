@@ -5,7 +5,7 @@
 
 #define PROGRAM_START 0x100
 
-#ifdef _DEBUG
+#if _DEBUG
 	#define DEBUG_PRINT(s, ...) printf(s, __VA_ARGS__)
 #else
 	#define DEBUG_PRINT(s, ...)
@@ -46,6 +46,9 @@ static char GetRegisterFromIndex(uint8_t index)
 
 		case 0x6: return 'M';
 	}
+
+	fprintf(stderr, "Invalid register access 0x%02X", index);
+	exit(1);
 }
 
 
@@ -55,7 +58,7 @@ uint16_t i8080::add(const uint8_t v1, const uint8_t v2)
 	
 	setZSP(res);
 	m_flags.setCY((res >> 8) & 0x1);
-	m_flags.setAC((v1 ^ v2 ^ res) & 0x10);
+	m_flags.setAC(((v1 ^ v2 ^ res) & 0x10) >> 4);
 
 	return res;
 }
@@ -67,7 +70,7 @@ uint16_t i8080::subtract(const uint8_t v1, const uint8_t v2)
 
 	setZSP(res);
 	m_flags.setCY(!((res >> 8) & 0x1));
-	m_flags.setAC((v1 ^ v2 ^ res) & 0x10);
+	m_flags.setAC(((v1 ^ v2 ^ res) & 0x10) >> 4);
 
 	return res;
 }
@@ -85,9 +88,15 @@ uint8_t i8080::compare(const uint8_t value)
 	}
 
 	setZSP(res);
-	m_flags.setAC((registers[A] ^ value ^ res) & 0x10);
+	setACF(registers[A], value, res);
 
 	return res;
+}
+
+void i8080::setACF(uint8_t v1, uint8_t v2, uint8_t v3)
+{
+	uint8_t res = ((v1 ^ v2 ^ v3) & 0x1) >> 4;
+	m_flags.setAC(res);
 }
 
 void i8080::setZSP(const uint8_t value)
@@ -135,10 +144,17 @@ void i8080::Cycle()
 	{
 		case 0x00: DEBUG_PRINT("NOOP\n");	break;
 
-		case 0x32: STA();	break;
-		case 0x3A: LDA();	break;
+		case 0x2F: CMA();	break;
 
+		case 0x27: DAA();	break;
+		case 0x37: STC();	break;
+		case 0x3F: CMC();	break;
+
+		case 0xE9: PCHL();  break;
+
+		case 0xE3: XTHL();	break;
 		case 0xEB: XCHG();	break;
+		case 0xF9: SPHL();	break;
 
 		default: {
 			if (((opcode ^ 0xFB) & 0xC7) == 0xC7) {
@@ -166,6 +182,11 @@ void i8080::Cycle()
 				return;
 			}
 
+			if (((opcode ^ 0xF6) & 0xCF) == 0xCF) {
+				DAD(opcode);
+				return;
+			}
+
 			if (((opcode ^ 0xFE) & 0xCF) == 0xCF) {
 				LXI(opcode);
 				return;
@@ -173,6 +194,22 @@ void i8080::Cycle()
 
 			if (((opcode ^ 0xF9) & 0xC7) == 0xC7) {
 				MVI(opcode);
+				return;
+			}
+
+			if (((opcode ^ 0xF8) & 0xE7) == 0xE7) {
+				ProcessRotateAcc(opcode);
+				return;
+			}
+
+			// LDAX/STAX
+			if (((opcode ^ 0xFD) & 0xE7) == 0xE7) {
+				ProcessAccTransfer(opcode);
+				return;
+			}
+
+			if (((opcode ^ 0xDD) & 0xE7) == 0xE7) {
+				ProcessDirectAddressing(opcode);
 				return;
 			}
 
@@ -210,6 +247,8 @@ void i8080::Cycle()
 				ProcessRET(opcode);
 				return;
 			}
+
+			fprintf(stderr, "INVALID OPERATION\nExiting...\n");
 			exit(1);
 		}
 	}
@@ -230,7 +269,7 @@ void i8080::RET(bool cond)
 		return;
 	}
 
-	DEBUG_PRINT("-- NO RET\n");
+	DEBUG_PRINT(" -- NO RET\n");
 }
 
 void i8080::JMP(bool cond)
@@ -239,6 +278,11 @@ void i8080::JMP(bool cond)
 
 	if (cond) {
 		DEBUG_PRINT(" 0x%04X\n", addr);
+
+		if (addr == 0x0) {
+			m_CPM->WBOOT();
+		}
+
 		PC = addr;
 		return;
 	}
@@ -272,6 +316,13 @@ void i8080::CALL(bool cond)
 	}
 
 	DEBUG_PRINT(" -- NO CALL\n");
+}
+
+void i8080::PCHL()
+{
+	PC = LoadRegisterPair(H, L);
+
+	DEBUG_PRINT("PCHL PC -> 0x%04X\n", PC);
 }
 
 void i8080::POP(uint8_t rhIdx, uint8_t rlIdx)
@@ -314,6 +365,20 @@ void i8080::PUSH_PSW()
 	DEBUG_PRINT("PUSH_PSW\n");
 }
 
+void i8080::STC()
+{
+	m_flags.setCY(0x1);
+	DEBUG_PRINT("STC\n");
+}
+
+void i8080::CMC()
+{
+	uint8_t val = !m_flags.cy();
+	m_flags.setCY(val);
+
+	DEBUG_PRINT("CMC cy = %d\n", val);
+}
+
 void i8080::MVI(uint8_t opcode)
 {
 	uint8_t regIdx = (opcode & 0x38) >> 3;
@@ -334,12 +399,22 @@ void i8080::MOV(uint8_t opcode)
 	uint8_t srcIndex = opcode & 0x7;
 
 	if (dstIndex == MEMORY_REF) {
-		m_Memory->Write(LoadRegisterPair(H, L), registers[srcIndex]);
+		uint16_t addr = LoadRegisterPair(H, L);
+		m_Memory->Write(addr, registers[srcIndex]);
+
+		DEBUG_PRINT("MOV 0x%02X(%c) -> 0x%04X(M)\n",
+			registers[srcIndex], GetRegisterFromIndex(srcIndex), addr);
+
 		return;
 	}
 	else if (srcIndex == MEMORY_REF) {
-		uint8_t byte = m_Memory->Read(LoadRegisterPair(H, L));
+		uint16_t addr = LoadRegisterPair(H, L);
+		uint8_t byte = m_Memory->Read(addr);
 		registers[dstIndex] = byte;
+
+		DEBUG_PRINT("MOV 0x%02X(M) -> %c\n",
+			byte, GetRegisterFromIndex(dstIndex));
+
 		return;
 	}
 
@@ -351,15 +426,6 @@ void i8080::MOV(uint8_t opcode)
 	DEBUG_PRINT("MOV 0x%02X(%c) -> 0x%02X(%c)\n",
 		srcReg, GetRegisterFromIndex(srcIndex),
 		dstReg, GetRegisterFromIndex(dstIndex));
-}
-
-void i8080::LDA()
-{
-	uint16_t addr = LoadWord();
-	uint8_t data = m_Memory->Read(addr);
-	registers[A] = data;
-
-	DEBUG_PRINT("LDA 0x%02X(0x%04X) -> A\n", addr, data);
 }
 
 // Exchange HL with DE
@@ -378,13 +444,153 @@ void i8080::XCHG()
 		registers[E], registers[L]);
 }
 
-void i8080::STA()
+void i8080::XTHL()
 {
-	uint16_t addr = LoadWord();
+	uint8_t temp = registers[L];
+	registers[L] = m_Memory->Read(SP);
+	m_Memory->Write(SP, temp);
 
+	temp = registers[H];
+	registers[H] = m_Memory->Read(SP + 1);
+	m_Memory->Write(SP + 1, temp);
+
+	DEBUG_PRINT("XTHL H(0x%02X), L(0x%02X)\n", registers[H], registers[L]);
+}
+
+void i8080::SPHL()
+{
+	uint16_t data = LoadRegisterPair(H, L);
+	SP = data;
+
+	DEBUG_PRINT("SPHL 0x%04X(HL) -> SP\n", data);
+}
+
+void i8080::STAX(uint16_t addr)
+{
+	m_Memory->Write(addr, registers[A]);
+
+	DEBUG_PRINT("STAX 0x%02X(A) -> 0x%04X(M)\n", registers[A], addr);
+
+}
+
+void i8080::LDAX(uint16_t addr)
+{
+	uint8_t data = m_Memory->Read(addr);
+	registers[A] = data;
+
+	DEBUG_PRINT("LDAX 0x%02X(0x%04X) -> A\n", data, addr);
+}
+
+void i8080::SHLD(uint16_t addr)
+{
+	m_Memory->Write(addr, registers[L]);
+	m_Memory->Write(addr+1, registers[H]);
+
+	DEBUG_PRINT("SHLD 0x%02X(L) -> 0x%04X, 0x%02X(H) -> 0x%04X\n", registers[L], addr, registers[H], addr+1);
+}
+
+void i8080::LHLD(uint16_t addr)
+{
+	uint8_t loByte = m_Memory->Read(addr);
+	uint8_t hiByte = m_Memory->Read(addr + 1);
+
+	registers[L] = loByte;
+	registers[H] = hiByte;
+
+	DEBUG_PRINT("LHLD 0x%02X(0x%04X) -> L, 0x%02X(0X%04X) -> H\n", loByte, addr, hiByte, addr+1);
+}
+
+void i8080::LDA(uint16_t addr)
+{
+	uint8_t data = m_Memory->Read(addr);
+	registers[A] = data;
+
+	DEBUG_PRINT("LDA 0x%02X(0x%04X) -> A\n", data, addr);
+}
+
+void i8080::STA(uint16_t addr)
+{
 	m_Memory->Write(addr, registers[A]);
 
 	DEBUG_PRINT("STA 0x%02X(A) -> 0x%04X(M)\n", registers[A], addr);
+}
+
+void i8080::DAD(uint8_t opcode)
+{
+	uint8_t rpIdx = (opcode & 0x30) >> 4;
+
+	uint16_t rpValue{};
+
+	switch (rpIdx) {
+		case 0x0: rpValue = LoadRegisterPair(B, C); break;
+		case 0x1: rpValue = LoadRegisterPair(D, E); break;
+		case 0x2: rpValue = LoadRegisterPair(H, L); break;
+		case 0x3: rpValue = SP;
+	}
+
+	uint16_t HLValue = LoadRegisterPair(H, L);
+
+	uint32_t res = rpValue + HLValue;
+	m_flags.setCY(res >> 16);
+
+	registers[L] = res & 0xFF;
+	registers[H] = (res & 0xFF00) >> 8;
+
+// ugly debug print block
+#ifdef _DEBUG
+	if (rpIdx == 0x3) {
+		DEBUG_PRINT("DAD 0x%04X(SP) + 0x%04X(HL) -> 0x%04X(HL)\n", rpValue, HLValue, res);
+	}
+	else {
+
+		uint8_t rpHi{}, rpLo{};
+		switch (rpIdx) {
+			case 0x0: rpHi = B; rpLo = C; break;
+			case 0x1: rpHi = D; rpLo = E; break;
+			case 0x2: rpHi = H; rpLo = L; break;
+		}
+		DEBUG_PRINT("DAD 0x%04X(%c%c) + 0x%04X(HL) -> 0x%04X(HL)\n",
+			rpValue,
+			GetRegisterFromIndex(rpHi), GetRegisterFromIndex(rpLo),
+			HLValue, res);
+	}
+#endif
+}
+
+void i8080::DAA()
+{
+	uint8_t initialA = registers[A];
+
+	uint8_t accLo = registers[A] & 0x0F;
+	if ((accLo > 0x9) || m_flags.ac() == 0x1) {
+		uint16_t res = registers[A] + 6;
+
+		setACF(initialA, 0x6, res);
+		accLo = res & 0xF;
+		registers[A] = res;
+	}
+
+	uint8_t accHi = registers[A] >> 4;
+	if ((accHi > 0x9) || m_flags.cy() == 0x1) {
+		accHi += 6;
+
+		m_flags.setCY((accHi >> 4) & 0x1);
+	}
+
+	uint8_t res = (accHi << 4) | accLo;
+	registers[A] = res;
+
+	setZSP(res);
+
+	DEBUG_PRINT("DAA 0x%02X(A) -> 0x%02X(A)\n", initialA, registers[A]);
+}
+
+void i8080::CMA()
+{
+	uint8_t a = registers[A];
+	registers[A] = ~a;
+
+	DEBUG_PRINT("CMA 0x%02X(A) -> 0x%02X(A)\n", a, registers[A]);
 }
 
 void i8080::INR(uint8_t opcode)
@@ -678,7 +884,7 @@ void i8080::XRA(uint8_t value, uint8_t regIdx)
 
 	setZSP(res);
 	m_flags.setCY(0);
-	m_flags.setAC((a ^ value ^ res) & 0x10);
+	setACF(a, value, res);
 
 	DEBUG_PRINT("XRA 0x%02X(A) XOR 0x%02X(%c) -> 0x%02X\n", a, value, GetRegisterFromIndex(regIdx), res);
 }
@@ -701,6 +907,52 @@ void i8080::CMP(uint8_t value, uint8_t regIdx)
 	uint8_t res = compare(value);
 
 	DEBUG_PRINT("CMP 0x%02X(A), 0x%02X(%c)\n", registers[A], value, GetRegisterFromIndex(regIdx));
+}
+
+void i8080::RLC()
+{
+	m_flags.setCY(registers[A] >> 7);
+
+	registers[A] <<= 1;
+	registers[A] |= m_flags.cy();
+
+	DEBUG_PRINT("RLC A<< -> 0x%02X\n", registers[A]);
+}
+
+void i8080::RRC()
+{
+	m_flags.setCY(registers[A] & 0x1);
+
+	registers[A] >>= 1;
+	registers[A] |= (m_flags.cy() << 7);
+
+	DEBUG_PRINT("RRC A>> -> 0x%02X\n", registers[A]);
+}
+
+void i8080::RAL()
+{
+	uint8_t aHiBit = registers[A] >> 7;
+	uint8_t c = m_flags.cy();
+
+	m_flags.setCY(aHiBit);
+
+	registers[A] <<= 1;
+	registers[A] |= c;
+
+	DEBUG_PRINT("RAL c<<A -> 0x%02X\n", registers[A]);
+}
+
+void i8080::RAR()
+{
+	uint8_t aLowBit = registers[A] & 0x1;
+	uint8_t c = m_flags.cy();
+
+	m_flags.setCY(aLowBit);
+
+	registers[A] >>= 1;
+	registers[A] |= (c << 7);
+
+	DEBUG_PRINT("RAR A>>c -> 0x%02X\n", registers[A]);
 }
 
 void i8080::ProcessPUSH(uint8_t opcode)
@@ -802,12 +1054,12 @@ void i8080::ProcessRET(uint8_t opcode)
 
 	// Bit determines whether RET or RZ is called
 	// when code = 0x1
-	uint8_t callBit = opcode & 0x1;
+	uint8_t retBit = opcode & 0x1;
 
 	switch (code)
 	{
 		case 0x1:
-			if (callBit == 0x1) {
+			if (retBit == 0x1) {
 				cond = true;
 				DEBUG_PRINT("RET");
 			}
@@ -827,6 +1079,38 @@ void i8080::ProcessRET(uint8_t opcode)
 	}
 
 	RET(cond);
+}
+
+void i8080::ProcessRotateAcc(uint8_t opcode)
+{
+	uint8_t operationIdx = (opcode & 0x18) >> 3;
+
+	switch (operationIdx) {
+		case 0x0: RLC(); break;
+		case 0x1: RRC(); break;
+		case 0x2: RAL(); break;
+		case 0x3: RAR(); break;
+	}
+}
+
+void i8080::ProcessAccTransfer(uint8_t opcode)
+{
+	uint8_t rpIdx = (opcode & 0x10) >> 4;
+	uint8_t operationIdx = (opcode & 0x8) >> 3;
+
+	uint8_t rpHi{}, rpLo{};
+
+	switch (rpIdx) {
+		case 0x0: rpHi = B; rpLo = C; break;
+		case 0x1: rpHi = D; rpLo = E; break;
+	}
+
+	uint16_t addr = LoadRegisterPair(rpHi, rpLo);
+
+	switch (operationIdx) {
+		case 0x0: STAX(addr); break;
+		case 0x1: LDAX(addr); break;
+	}
 }
 
 void i8080::ProcessImmediate(uint8_t opcode)
@@ -874,5 +1158,20 @@ void i8080::ProcessRegisterToAcc(uint8_t opcode)
 		default:
 			DEBUG_PRINT("ProcessRegisterToAcc() - INVALID OPERATION\n");
 			exit(1);
+	}
+}
+
+void i8080::ProcessDirectAddressing(uint8_t opcode)
+{
+	uint8_t operationIdx = (opcode & 0x18) >> 3;
+
+	uint16_t addr = LoadWord();
+
+	switch (operationIdx)
+	{
+		case 0x0: SHLD(addr); break;
+		case 0x1: LHLD(addr); break;
+		case 0x2: STA(addr);  break;
+		case 0x3: LDA(addr);  break;
 	}
 }

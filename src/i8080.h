@@ -50,7 +50,6 @@ private:
 	} m_flags;
 
 	uint8_t registers[8]{0};
-
 	uint16_t PC{}, SP{};
 
 	Memory* m_Memory = nullptr;
@@ -60,6 +59,7 @@ private:
 	uint16_t add(const uint8_t v1, const uint8_t v2);
 	uint16_t subtract(const uint8_t v1, const uint8_t v2);
 	uint8_t compare(const uint8_t value);
+	void setACF(uint8_t v1, uint8_t v2, uint8_t v3);
 	void setZSP(const uint8_t value);
 
 	uint8_t LoadByte();
@@ -69,22 +69,36 @@ private:
 	void RET(bool cond);
 	void JMP(bool cond);
 	void CALL(bool cond);
+	void PCHL();
 
 	void POP(uint8_t rhIdx, uint8_t rlIdx);
 	void POP_PSW();
 	void PUSH(uint8_t rhIdx, uint8_t rlIdx);
 	void PUSH_PSW();
 
+	void STC();
+	void CMC();
+
 	void MOV(uint8_t opcode);
 
 	void MVI(uint8_t opcode);
 	void LXI(uint8_t opcode);
-	void LDA();
-
 	void XCHG();
+	void XTHL();
+	void SPHL();
 
-	void STA();
+	void STAX(uint16_t addr);
+	void LDAX(uint16_t addr);
 
+	void SHLD(uint16_t addr);
+	void LHLD(uint16_t addr);
+	void STA(uint16_t addr);
+	void LDA(uint16_t addr);
+
+	void DAD(uint8_t opcode);
+	void DAA();
+
+	void CMA();
 	void INR(uint8_t opcode);
 	void DCR(uint8_t opcode);
 	void INX(uint8_t opcode);
@@ -108,12 +122,20 @@ private:
 	void ORA(uint8_t value, uint8_t regIdx);
 	void CMP(uint8_t value, uint8_t regIdx);
 
+	void RLC();
+	void RRC();
+	void RAL();
+	void RAR();
+
 	void ProcessPUSH(uint8_t opcode);
 	void ProcessPOP(uint8_t opcode);
 	void ProcessJMP(uint8_t opcode);
 	void ProcessCALL(uint8_t opcode);
 	void ProcessRET(uint8_t opcode);
 
+	void ProcessRotateAcc(uint8_t opcode);
+	void ProcessAccTransfer(uint8_t opcode);
 	void ProcessImmediate(uint8_t opcode);
 	void ProcessRegisterToAcc(uint8_t opcode);
+	void ProcessDirectAddressing(uint8_t opcode);
 };
